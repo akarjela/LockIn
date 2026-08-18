@@ -31,12 +31,17 @@ import { toZonedDate, zonedTimeToInstant } from "@/lib/schedule/tz";
 const LOCAL_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 
 const CaptureSchema = z.object({
-  tasks: z.array(
+  items: z.array(
     z.object({
       title: z.string(),
       /** "YYYY-MM-DDTHH:MM" in the user's local time, or null if none was given. */
       due_local: z.string().nullable(),
-      estimated_minutes: z.number(),
+      /** True for ongoing practice, false for a fixed amount of work. */
+      repeats_weekly: z.boolean(),
+      /** Total minutes when one-off; minutes *per week* when it repeats. */
+      minutes: z.number(),
+      /** 1 shaky .. 5 solid. Only meaningful for repeating work. */
+      confidence: z.number().nullable(),
       /** 1 high, 2 normal, 3 low. */
       priority: z.number(),
       splittable: z.boolean(),
@@ -44,43 +49,24 @@ const CaptureSchema = z.object({
       assumption: z.string().nullable(),
     }),
   ),
-  topics: z.array(
-    z.object({
-      name: z.string(),
-      target_minutes_per_week: z.number(),
-      /** 1 shaky .. 5 solid. */
-      confidence: z.number(),
-      priority: z.number(),
-      /** Exam or target date, local wall clock, or null. */
-      target_local: z.string().nullable(),
-      assumption: z.string().nullable(),
-    }),
-  ),
-  /** Anything that could not be turned into a task or topic. */
+  /** Anything that could not be turned into an item. */
   unclear: z.array(z.string()),
 });
 
-export interface TaskDraftPreview {
+export interface ItemDraftPreview {
   title: string;
   due_at: string | null;
-  estimated_minutes: number;
+  /** Exactly one of these is set, mirroring the database constraint. */
+  estimated_minutes: number | null;
+  target_minutes_per_week: number | null;
+  confidence: Confidence | null;
   priority: Priority;
   splittable: boolean;
   assumption: string | null;
 }
 
-export interface TopicDraftPreview {
-  name: string;
-  target_minutes_per_week: number;
-  confidence: Confidence;
-  priority: Priority;
-  target_at: string | null;
-  assumption: string | null;
-}
-
 export interface CaptureResult {
-  tasks: TaskDraftPreview[];
-  topics: TopicDraftPreview[];
+  items: ItemDraftPreview[];
   unclear: string[];
 }
 
@@ -110,17 +96,19 @@ function systemPrompt(now: Date, timezone: string): string {
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
   ];
 
-  return `You extract tasks and study topics from a person's notes about their week.
+  return `You extract work items from a person's notes about their week.
 
 Today is ${weekdays[today.weekday]}, ${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")} in timezone ${timezone}.
 
 You are NOT scheduling anything. A separate deterministic planner decides when
 work happens. Your only job is to turn prose into structured items, faithfully.
 
-TASK vs TOPIC
-- A task has an end state: "finish the pset", "email the registrar".
-- A topic is ongoing study that never completes: "dynamic programming", "Spanish".
-- If something is phrased as recurring practice or revision, it is a topic.
+ONE-OFF vs REPEATING
+- Set repeats_weekly=false for a fixed amount of work with an end state:
+  "finish the pset", "email the registrar", "read chapter 12".
+- Set repeats_weekly=true for ongoing practice that never completes:
+  "dynamic programming", "Spanish", "gym".
+- If it is phrased as recurring practice, revision, or a habit, it repeats.
 
 DATES
 - Write local wall-clock times as "YYYY-MM-DDTHH:MM". Never include a timezone
@@ -128,13 +116,15 @@ DATES
 - Resolve relative dates against today's date above. "Thursday" means the next
   Thursday that has not yet passed. "Next week" means seven days out.
 - A date with no time of day means 23:59 for a deadline, 09:00 for an exam.
-- If no deadline is stated or implied, use null. Do not invent one.
+- If no date is stated or implied, use null. Do not invent one.
+- Repeating work can still have a date — an exam it is building toward.
 
-ESTIMATES
+MINUTES
+- "minutes" means the TOTAL for one-off work, and minutes PER WEEK for repeating
+  work. Read "3 hours a week on DP" as repeats_weekly=true, minutes=180.
 - Use a stated duration when there is one ("about 3 hours" -> 180).
-- Otherwise infer something plausible from the work described, and record what
-  you assumed in "assumption".
-- estimated_minutes must be between 5 and 1440.
+- Otherwise infer something plausible and record it in "assumption".
+- One-off minutes must be 5..1440. Weekly minutes must be 15..10080.
 
 OTHER FIELDS
 - priority: 1 high, 2 normal, 3 low. Default 2 unless urgency or importance is
@@ -142,9 +132,8 @@ OTHER FIELDS
   deadlines.
 - splittable: false only if the work must happen in one sitting (an exam, a
   practice test, a call). Default true.
-- confidence (topics): 1 shaky .. 5 solid. Map phrases like "I'm terrible at" to
-  1-2 and "just keeping it warm" to 4-5. Default 3.
-- target_minutes_per_week (topics): default 120 unless the person says otherwise.
+- confidence: 1 shaky .. 5 solid, for repeating work only; null otherwise. Map
+  "I'm terrible at" to 1-2 and "just keeping it warm" to 4-5. Default 3.
 
 ASSUMPTIONS
 - "assumption" must say what you inferred that the person did not state, in one
@@ -152,8 +141,8 @@ ASSUMPTIONS
   field came from what they actually wrote.
 
 UNCLEAR
-- Put anything you could not confidently turn into a task or topic into
-  "unclear", quoting their words. Do not guess to empty this list.`;
+- Put anything you could not confidently turn into an item into "unclear",
+  quoting their words. Do not guess just to empty this list.`;
 }
 
 /**
@@ -196,22 +185,25 @@ export async function parseCapture(
   // and a value outside these bounds would be rejected by a database check
   // constraint further down with a far less helpful message.
   return {
-    tasks: parsed.tasks.map((task) => ({
-      title: task.title.trim().slice(0, 200),
-      due_at: toInstant(task.due_local, timezone),
-      estimated_minutes: clamp(task.estimated_minutes, 5, 1440, 30),
-      priority: clamp(task.priority, 1, 3, 2) as Priority,
-      splittable: task.splittable,
-      assumption: task.assumption,
-    })),
-    topics: parsed.topics.map((topic) => ({
-      name: topic.name.trim().slice(0, 120),
-      target_minutes_per_week: clamp(topic.target_minutes_per_week, 15, 10080, 120),
-      confidence: clamp(topic.confidence, 1, 5, 3) as Confidence,
-      priority: clamp(topic.priority, 1, 3, 2) as Priority,
-      target_at: toInstant(topic.target_local, timezone),
-      assumption: topic.assumption,
-    })),
+    items: parsed.items.map((item) => {
+      const repeats = item.repeats_weekly;
+      return {
+        title: item.title.trim().slice(0, 200),
+        due_at: toInstant(item.due_local, timezone),
+        // Exactly one workload field, mirroring the database constraint. Setting
+        // both would be rejected downstream with a far less helpful message.
+        estimated_minutes: repeats ? null : clamp(item.minutes, 5, 1440, 30),
+        target_minutes_per_week: repeats
+          ? clamp(item.minutes, 15, 10080, 120)
+          : null,
+        confidence: repeats
+          ? (clamp(item.confidence ?? 3, 1, 5, 3) as Confidence)
+          : null,
+        priority: clamp(item.priority, 1, 3, 2) as Priority,
+        splittable: repeats ? true : item.splittable,
+        assumption: item.assumption,
+      };
+    }),
     unclear: parsed.unclear,
   };
 }

@@ -10,7 +10,7 @@
 /** 1 = highest. Matches the `priority between 1 and 3` check constraint. */
 export type Priority = 1 | 2 | 3;
 
-export type TaskStatus = "todo" | "doing" | "done" | "archived";
+export type ItemStatus = "todo" | "doing" | "done" | "archived";
 
 /** Self-rated grasp of a topic: 1 shaky .. 5 solid. */
 export type Confidence = 1 | 2 | 3 | 4 | 5;
@@ -29,38 +29,59 @@ export interface UserSettings {
   updated_at: string;
 }
 
-export interface Task {
+/**
+ * One thing you want time for.
+ *
+ * Tasks and topics used to be separate tables, which forced a categorisation
+ * decision that said nothing about the work — "is exam revision a task or a
+ * topic?" is a question about the schema, not about your week. Now there is one
+ * type, and the difference is expressed as fields:
+ *
+ *   `estimated_minutes`       finite work that burns down as you do it
+ *   `target_minutes_per_week` recurring work that refills every week
+ *
+ * Exactly one is set, enforced by a database constraint. `due_at` is orthogonal
+ * — a deadline on finite work, an exam date on recurring work, absent on either.
+ */
+export interface Item {
   id: string;
   user_id: string;
   title: string;
   notes: string | null;
-  /** ISO instant, or null for "no deadline". */
+  /** Deadline or target date, as an ISO instant. Null = no fixed date. */
   due_at: string | null;
-  estimated_minutes: number;
+  /** Total work for finite items. Null exactly when `target_minutes_per_week` is set. */
+  estimated_minutes: number | null;
+  /** Weekly target for recurring items. Null exactly when `estimated_minutes` is set. */
+  target_minutes_per_week: number | null;
   spent_minutes: number;
   priority: Priority;
-  status: TaskStatus;
+  /** Self-rated grasp, 1 shaky .. 5 solid. Null when it does not apply. */
+  confidence: Confidence | null;
   min_block_minutes: number;
   splittable: boolean;
+  /** `archived` doubles as "paused" for recurring work. */
+  status: ItemStatus;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export interface Topic {
-  id: string;
-  user_id: string;
-  name: string;
-  notes: string | null;
-  target_at: string | null;
-  target_minutes_per_week: number;
-  confidence: Confidence;
-  priority: Priority;
-  min_block_minutes: number;
-  active: boolean;
-  created_at: string;
-  updated_at: string;
-}
+/** Fields a client may set. The server owns ids, timestamps and spent time. */
+export type ItemDraft = Pick<Item, "title"> &
+  Partial<
+    Pick<
+      Item,
+      | "notes"
+      | "due_at"
+      | "estimated_minutes"
+      | "target_minutes_per_week"
+      | "priority"
+      | "confidence"
+      | "min_block_minutes"
+      | "splittable"
+    >
+  >;
 
 export interface AvailabilityBlock {
   id: string;
@@ -89,9 +110,7 @@ export interface CalendarEvent {
 export interface ScheduledBlock {
   id: string;
   user_id: string;
-  /** Exactly one of `task_id` / `topic_id` is non-null. */
-  task_id: string | null;
-  topic_id: string | null;
+  item_id: string;
   starts_at: string;
   ends_at: string;
   locked: boolean;
@@ -99,34 +118,27 @@ export interface ScheduledBlock {
   created_at: string;
 }
 
-/** Fields a client may set when creating a task. Server owns the rest. */
-export type TaskDraft = Pick<Task, "title"> &
-  Partial<
-    Pick<
-      Task,
-      | "notes"
-      | "due_at"
-      | "estimated_minutes"
-      | "priority"
-      | "min_block_minutes"
-      | "splittable"
-    >
-  >;
+/**
+ * Whether this item refills weekly rather than burning down.
+ *
+ * Derived from the data rather than stored, so it cannot disagree with the
+ * workload fields the database already constrains.
+ */
+export function isRecurring(item: Item): boolean {
+  return item.target_minutes_per_week !== null;
+}
 
-export type TopicDraft = Pick<Topic, "name"> &
-  Partial<
-    Pick<
-      Topic,
-      | "notes"
-      | "target_at"
-      | "target_minutes_per_week"
-      | "confidence"
-      | "priority"
-      | "min_block_minutes"
-    >
-  >;
-
-/** Minutes of work still owed on a task. Never negative. */
-export function remainingMinutes(task: Task): number {
-  return Math.max(0, task.estimated_minutes - task.spent_minutes);
+/**
+ * Minutes this item still wants scheduled.
+ *
+ * Finite work burns down against the estimate. Recurring work is measured
+ * against the weekly target instead, and `alreadyThisWeek` is what the caller
+ * has already committed in the current window — without it, every regeneration
+ * would re-request the full target and double-book the week.
+ */
+export function remainingMinutes(item: Item, alreadyThisWeek = 0): number {
+  if (item.target_minutes_per_week !== null) {
+    return Math.max(0, item.target_minutes_per_week - alreadyThisWeek);
+  }
+  return Math.max(0, (item.estimated_minutes ?? 0) - item.spent_minutes);
 }

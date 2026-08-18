@@ -4,9 +4,8 @@ import { requireUser } from "@/lib/auth";
 import { listAvailability } from "@/lib/db/availability";
 import { listBlocks } from "@/lib/db/plan";
 import { getSettings } from "@/lib/db/settings";
-import { listOpenTasks } from "@/lib/db/tasks";
-import { listTopics } from "@/lib/db/topics";
-import { remainingMinutes } from "@/lib/db/types";
+import { listOpenItems } from "@/lib/db/items";
+import { isRecurring, remainingMinutes } from "@/lib/db/types";
 import {
   formatDayHeading,
   formatDuration,
@@ -23,17 +22,13 @@ export default async function WeekPage() {
   const settings = await getSettings(user.id);
   const window = planWindow(now, settings.timezone);
 
-  const [blocks, tasks, topics, template] = await Promise.all([
+  const [blocks, items, template] = await Promise.all([
     listBlocks(user.id, window.from, window.to),
-    listOpenTasks(user.id),
-    listTopics(user.id, { activeOnly: true }),
+    listOpenItems(user.id),
     listAvailability(user.id),
   ]);
 
-  const names = new Map<string, string>([
-    ...tasks.map((task) => [task.id, task.title] as const),
-    ...topics.map((topic) => [topic.id, topic.name] as const),
-  ]);
+  const byId = new Map(items.map((item) => [item.id, item]));
 
   // Group into local days. Grouping on the rendered heading would merge two
   // different weeks that share a weekday name, so the key is the calendar date.
@@ -43,12 +38,10 @@ export default async function WeekPage() {
     days.set(key, [...(days.get(key) ?? []), block]);
   }
 
-  const scheduledIds = new Set(
-    blocks.flatMap((block) => [block.task_id, block.topic_id].filter(Boolean)),
-  );
+  const scheduledIds = new Set(blocks.map((block) => block.item_id));
   // Derived from what was persisted rather than stored at generation time, so it
-  // stays honest if a task is added after the last plan was built.
-  const unscheduled = tasks.filter((task) => !scheduledIds.has(task.id));
+  // stays honest if an item is added after the last plan was built.
+  const unscheduled = items.filter((item) => !scheduledIds.has(item.id));
 
   const totalMinutes = blocks.reduce(
     (sum, block) =>
@@ -97,7 +90,7 @@ export default async function WeekPage() {
           </p>
         ) : days.size === 0 ? (
           <p className="mt-8 rounded-lg border border-dashed border-black/15 px-6 py-10 text-center text-sm text-zinc-500 dark:border-white/20">
-            No blocks yet. Add tasks or topics, then build the plan.
+            No blocks yet. Add some work, then build the plan.
           </p>
         ) : (
           <div className="mt-8 space-y-6">
@@ -109,7 +102,7 @@ export default async function WeekPage() {
 
                 <ul className="mt-2 divide-y divide-black/10 dark:divide-white/10">
                   {dayBlocks.map((block) => {
-                    const subjectId = block.task_id ?? block.topic_id ?? "";
+                    const item = byId.get(block.item_id);
                     const minutes =
                       (new Date(block.ends_at).getTime() -
                         new Date(block.starts_at).getTime()) /
@@ -128,11 +121,15 @@ export default async function WeekPage() {
                           <span
                             aria-hidden
                             className="mr-2 text-zinc-400"
-                            title={block.task_id ? "Task" : "Topic"}
+                            title={
+                              item && isRecurring(item)
+                                ? "Every week"
+                                : "Fixed amount"
+                            }
                           >
-                            {block.task_id ? "●" : "○"}
+                            {item && isRecurring(item) ? "○" : "●"}
                           </span>
-                          {names.get(subjectId) ?? "Removed item"}
+                          {item?.title ?? "Removed item"}
                         </span>
 
                         <span className="text-xs text-zinc-500">
@@ -180,14 +177,16 @@ export default async function WeekPage() {
               No room in this week&apos;s free time, or due beyond it.
             </p>
             <ul className="mt-3 divide-y divide-black/10 dark:divide-white/10">
-              {unscheduled.map((task) => (
-                <li key={task.id} className="flex items-center gap-4 py-2">
-                  <span className="flex-1 text-sm">{task.title}</span>
+              {unscheduled.map((item) => (
+                <li key={item.id} className="flex items-center gap-4 py-2">
+                  <span className="flex-1 text-sm">{item.title}</span>
                   <span className="text-xs text-zinc-500">
-                    {formatDuration(remainingMinutes(task))}
+                    {isRecurring(item)
+                      ? `${formatDuration(item.target_minutes_per_week!)}/week`
+                      : formatDuration(remainingMinutes(item))}
                   </span>
                   <span className="text-xs text-zinc-500">
-                    {formatRelativeDay(task.due_at, now)}
+                    {formatRelativeDay(item.due_at, now)}
                   </span>
                 </li>
               ))}

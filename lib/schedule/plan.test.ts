@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Task, Topic } from "@/lib/db/types";
+import type { Item } from "@/lib/db/types";
 import { generatePlan } from "@/lib/schedule";
 import { rankCandidates, urgency } from "@/lib/schedule/score";
 import type { FreeSlot } from "@/lib/schedule/types";
@@ -9,14 +9,17 @@ const NOW = new Date("2026-08-17T12:00:00Z");
 /** End of the planning window — the tier-1/tier-2 boundary in rankCandidates. */
 const WINDOW_END = new Date("2026-08-24T12:00:00Z");
 
-function task(overrides: Partial<Task> & Pick<Task, "id" | "title">): Task {
+/** A fixed amount of work. */
+function item(overrides: Partial<Item> & Pick<Item, "id" | "title">): Item {
   return {
     user_id: "u1",
     notes: null,
     due_at: null,
     estimated_minutes: 60,
+    target_minutes_per_week: null,
     spent_minutes: 0,
     priority: 2,
+    confidence: null,
     status: "todo",
     min_block_minutes: 25,
     splittable: true,
@@ -24,23 +27,18 @@ function task(overrides: Partial<Task> & Pick<Task, "id" | "title">): Task {
     created_at: "2026-08-01T00:00:00Z",
     updated_at: "2026-08-01T00:00:00Z",
     ...overrides,
-  } as Task;
+  } as Item;
 }
 
-function topic(overrides: Partial<Topic> & Pick<Topic, "id" | "name">): Topic {
-  return {
-    user_id: "u1",
-    notes: null,
-    target_at: null,
+/** Work with a weekly target instead of a total. */
+function weekly(overrides: Partial<Item> & Pick<Item, "id" | "title">): Item {
+  return item({
+    estimated_minutes: null,
     target_minutes_per_week: 120,
     confidence: 3,
-    priority: 2,
     min_block_minutes: 30,
-    active: true,
-    created_at: "2026-08-01T00:00:00Z",
-    updated_at: "2026-08-01T00:00:00Z",
     ...overrides,
-  } as Topic;
+  });
 }
 
 /** One contiguous free stretch, all on the same local day. */
@@ -61,7 +59,7 @@ const BASE = {
   slotMinutes: 15,
   breakMinutes: 0,
   dailyCapMinutes: 480,
-  topicMinutesAlready: new Map<string, number>(),
+  minutesAlready: new Map<string, number>(),
 };
 
 describe("urgency", () => {
@@ -75,13 +73,10 @@ describe("urgency", () => {
 
 describe("rankCandidates", () => {
   it("puts an imminent deadline above a distant one", () => {
-    const ranked = rankCandidates(
-      [
-        task({ id: "far", title: "Far", due_at: "2026-09-30T12:00:00Z" }),
-        task({ id: "soon", title: "Soon", due_at: "2026-08-18T12:00:00Z" }),
-      ],
-      [],
-      NOW,
+    const ranked = rankCandidates([
+        item({ id: "far", title: "Far", due_at: "2026-09-30T12:00:00Z" }),
+        item({ id: "soon", title: "Soon", due_at: "2026-08-18T12:00:00Z" }),
+      ], NOW,
       new Map(),
       WINDOW_END,
     );
@@ -89,24 +84,18 @@ describe("rankCandidates", () => {
   });
 
   it("drops tasks with no remaining work", () => {
-    const ranked = rankCandidates(
-      [task({ id: "done", title: "Done", estimated_minutes: 60, spent_minutes: 60 })],
-      [],
-      NOW,
+    const ranked = rankCandidates([item({ id: "done", title: "Done", estimated_minutes: 60, spent_minutes: 60 })], NOW,
       new Map(),
       WINDOW_END,
     );
     expect(ranked).toHaveLength(0);
   });
 
-  it("demotes a topic that already met its weekly target", () => {
-    const ranked = rankCandidates(
-      [],
-      [
-        topic({ id: "met", name: "Met", target_minutes_per_week: 120 }),
-        topic({ id: "short", name: "Short", target_minutes_per_week: 120 }),
-      ],
-      NOW,
+  it("drops recurring work that already met its weekly target", () => {
+    const ranked = rankCandidates([
+        weekly({ id: "met", title: "Met", target_minutes_per_week: 120 }),
+        weekly({ id: "short", title: "Short", target_minutes_per_week: 120 }),
+      ], NOW,
       new Map([["met", 120]]),
       WINDOW_END,
     );
@@ -116,11 +105,11 @@ describe("rankCandidates", () => {
 
   it("is deterministic for equally-scored work", () => {
     const input = [
-      task({ id: "b", title: "B" }),
-      task({ id: "a", title: "A" }),
+      item({ id: "b", title: "B" }),
+      item({ id: "a", title: "A" }),
     ];
-    const first = rankCandidates(input, [], NOW, new Map(), WINDOW_END);
-    const second = rankCandidates([...input].reverse(), [], NOW, new Map(), WINDOW_END);
+    const first = rankCandidates(input, NOW, new Map(), WINDOW_END);
+    const second = rankCandidates([...input].reverse(), NOW, new Map(), WINDOW_END);
     expect(first.map((c) => c.id)).toEqual(second.map((c) => c.id));
   });
 });
@@ -129,18 +118,17 @@ describe("generatePlan", () => {
   it("schedules the urgent task before the relaxed one", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [
-        task({ id: "relaxed", title: "Relaxed", due_at: "2026-09-20T12:00:00Z" }),
-        task({ id: "urgent", title: "Urgent", due_at: "2026-08-18T00:00:00Z" }),
+      items: [
+        item({ id: "relaxed", title: "Relaxed", due_at: "2026-09-20T12:00:00Z" }),
+        item({ id: "urgent", title: "Urgent", due_at: "2026-08-18T00:00:00Z" }),
       ],
-      topics: [],
       freeSlots: [slot("2026-08-17T13:00:00Z", 3)],
     });
 
     expect(plan.blocks).toHaveLength(2);
-    expect(plan.blocks[0].task_id).toBe("urgent");
+    expect(plan.blocks[0].item_id).toBe("urgent");
     expect(plan.blocks[0].starts_at).toBe("2026-08-17T13:00:00.000Z");
-    expect(plan.blocks[1].task_id).toBe("relaxed");
+    expect(plan.blocks[1].item_id).toBe("relaxed");
     expect(plan.minutesPlaced).toBe(120);
     expect(plan.minutesFree).toBe(60);
   });
@@ -148,15 +136,14 @@ describe("generatePlan", () => {
   it("never schedules past a deadline", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [
-        task({
+      items: [
+        item({
           id: "t1",
           title: "Due at 14:00",
           due_at: "2026-08-17T14:00:00Z",
           estimated_minutes: 180,
         }),
       ],
-      topics: [],
       freeSlots: [slot("2026-08-17T13:00:00Z", 5)],
     });
 
@@ -164,7 +151,7 @@ describe("generatePlan", () => {
     expect(plan.blocks[0].ends_at).toBe("2026-08-17T14:00:00.000Z");
     expect(plan.unplaced).toEqual([
       {
-        kind: "task",
+        recurring: false,
         id: "t1",
         label: "Due at 14:00",
         minutesShort: 120,
@@ -177,8 +164,7 @@ describe("generatePlan", () => {
     const plan = generatePlan({
       ...BASE,
       dailyCapMinutes: 60,
-      tasks: [task({ id: "t1", title: "Big", estimated_minutes: 300 })],
-      topics: [],
+      items: [item({ id: "t1", title: "Big", estimated_minutes: 300 })],
       freeSlots: [slot("2026-08-17T13:00:00Z", 8)],
     });
 
@@ -190,8 +176,7 @@ describe("generatePlan", () => {
     const plan = generatePlan({
       ...BASE,
       dailyCapMinutes: 60,
-      tasks: [task({ id: "t1", title: "Big", estimated_minutes: 120 })],
-      topics: [],
+      items: [item({ id: "t1", title: "Big", estimated_minutes: 120 })],
       freeSlots: [
         slot("2026-08-17T13:00:00Z", 4, "2026-08-17"),
         slot("2026-08-18T13:00:00Z", 4, "2026-08-18"),
@@ -206,15 +191,14 @@ describe("generatePlan", () => {
   it("keeps indivisible work in a single block", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [
-        task({
+      items: [
+        item({
           id: "exam",
           title: "Mock exam",
           estimated_minutes: 120,
           splittable: false,
         }),
       ],
-      topics: [],
       freeSlots: [
         slot("2026-08-17T13:00:00Z", 1), // too short — must be skipped
         slot("2026-08-17T16:00:00Z", 3),
@@ -230,11 +214,10 @@ describe("generatePlan", () => {
     const plan = generatePlan({
       ...BASE,
       breakMinutes: 15,
-      tasks: [
-        task({ id: "a", title: "A", estimated_minutes: 60, priority: 1 }),
-        task({ id: "b", title: "B", estimated_minutes: 60, priority: 3 }),
+      items: [
+        item({ id: "a", title: "A", estimated_minutes: 60, priority: 1 }),
+        item({ id: "b", title: "B", estimated_minutes: 60, priority: 3 }),
       ],
-      topics: [],
       freeSlots: [slot("2026-08-17T13:00:00Z", 4)],
     });
 
@@ -242,25 +225,24 @@ describe("generatePlan", () => {
     expect(plan.blocks[1].starts_at).toBe("2026-08-17T14:15:00.000Z");
   });
 
-  it("schedules topics toward their weekly deficit only", () => {
+  it("schedules recurring work toward its weekly deficit only", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [],
-      topics: [topic({ id: "algo", name: "Algorithms", target_minutes_per_week: 120 })],
-      topicMinutesAlready: new Map([["algo", 90]]),
+      items: [
+        weekly({ id: "algo", title: "Algorithms", target_minutes_per_week: 120 }),
+      ],
+      minutesAlready: new Map([["algo", 90]]),
       freeSlots: [slot("2026-08-17T13:00:00Z", 5)],
     });
 
     expect(plan.minutesPlaced).toBe(30);
-    expect(plan.blocks[0].topic_id).toBe("algo");
-    expect(plan.blocks[0].task_id).toBeNull();
+    expect(plan.blocks[0].item_id).toBe("algo");
   });
 
   it("reports work it could not place at all", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [task({ id: "t1", title: "Homeless", estimated_minutes: 60 })],
-      topics: [],
+      items: [item({ id: "t1", title: "Homeless", estimated_minutes: 60 })],
       freeSlots: [],
     });
 
@@ -271,11 +253,11 @@ describe("generatePlan", () => {
   it("produces an identical plan when run twice", () => {
     const input = {
       ...BASE,
-      tasks: [
-        task({ id: "a", title: "A", due_at: "2026-08-19T12:00:00Z" }),
-        task({ id: "b", title: "B", due_at: "2026-08-19T12:00:00Z" }),
+      items: [
+        item({ id: "a", title: "A", due_at: "2026-08-19T12:00:00Z" }),
+        item({ id: "b", title: "B", due_at: "2026-08-19T12:00:00Z" }),
+        weekly({ id: "c", title: "C" }),
       ],
-      topics: [topic({ id: "c", name: "C" })],
       freeSlots: [slot("2026-08-17T13:00:00Z", 6)],
     };
 
@@ -287,34 +269,32 @@ describe("overdue work", () => {
   it("still gets scheduled rather than dropped", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [
-        task({
+      items: [
+        item({
           id: "late",
           title: "Late lab report",
           due_at: "2026-08-15T12:00:00Z", // two days ago
           estimated_minutes: 60,
         }),
       ],
-      topics: [],
       freeSlots: [slot("2026-08-17T13:00:00Z", 4)],
     });
 
     expect(plan.blocks).toHaveLength(1);
-    expect(plan.blocks[0].task_id).toBe("late");
+    expect(plan.blocks[0].item_id).toBe("late");
     expect(plan.unplaced).toEqual([]);
   });
 
   it("puts overdue work ahead of work merely due soon", () => {
     const plan = generatePlan({
       ...BASE,
-      tasks: [
-        task({ id: "soon", title: "Soon", due_at: "2026-08-18T12:00:00Z" }),
-        task({ id: "late", title: "Late", due_at: "2026-08-15T12:00:00Z" }),
+      items: [
+        item({ id: "soon", title: "Soon", due_at: "2026-08-18T12:00:00Z" }),
+        item({ id: "late", title: "Late", due_at: "2026-08-15T12:00:00Z" }),
       ],
-      topics: [],
       freeSlots: [slot("2026-08-17T13:00:00Z", 4)],
     });
 
-    expect(plan.blocks[0].task_id).toBe("late");
+    expect(plan.blocks[0].item_id).toBe("late");
   });
 });

@@ -36,7 +36,7 @@ export async function replacePlan(
   from: Date,
   to: Date,
   blocks: Array<
-    Pick<ScheduledBlock, "task_id" | "topic_id" | "starts_at" | "ends_at">
+    Pick<ScheduledBlock, "item_id" | "starts_at" | "ends_at">
   >,
   planRunId: string,
 ): Promise<ScheduledBlock[]> {

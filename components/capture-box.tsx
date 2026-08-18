@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 
 import { commitDrafts, parseNotes, type ParseState } from "@/app/capture/actions";
-import type { TaskDraftPreview, TopicDraftPreview } from "@/lib/ai/capture";
+import type { ItemDraftPreview } from "@/lib/ai/capture";
 import { formatDuration } from "@/lib/format";
 
 const PLACEHOLDER = `Type your week the way you'd say it out loud, e.g.
@@ -15,23 +15,21 @@ Need to renew my passport at some point.`;
 /**
  * Brain-dump box: parse, review, confirm.
  *
- * A client component because the review step needs local state — the drafts
- * exist only in the browser until confirmed, so a bad parse is discarded by
- * navigating away rather than by deleting rows.
+ * A client component because the review step needs local state — drafts exist
+ * only in the browser until confirmed, so a bad parse is discarded by navigating
+ * away rather than by deleting rows.
  */
 export function CaptureBox({ timezone }: { timezone: string }) {
   const [text, setText] = useState("");
   const [state, setState] = useState<ParseState>({ status: "idle" });
-  const [dropped, setDropped] = useState<Set<string>>(new Set());
+  const [dropped, setDropped] = useState<Set<number>>(new Set());
   const [pending, startTransition] = useTransition();
 
-  const key = (kind: string, index: number) => `${kind}-${index}`;
-
-  function toggle(id: string) {
+  function toggle(index: number) {
     setDropped((current) => {
       const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
       return next;
     });
   }
@@ -43,11 +41,10 @@ export function CaptureBox({ timezone }: { timezone: string }) {
     });
   }
 
-  function handleConfirm(tasks: TaskDraftPreview[], topics: TopicDraftPreview[]) {
+  function handleConfirm(items: ItemDraftPreview[]) {
     startTransition(async () => {
       await commitDrafts({
-        tasks: tasks.filter((_, i) => !dropped.has(key("task", i))),
-        topics: topics.filter((_, i) => !dropped.has(key("topic", i))),
+        items: items.filter((_, index) => !dropped.has(index)),
       });
       setText("");
       setState({ status: "idle" });
@@ -56,11 +53,7 @@ export function CaptureBox({ timezone }: { timezone: string }) {
   }
 
   const parsed = state.status === "parsed" ? state.result : null;
-  const keptCount = parsed
-    ? parsed.tasks.length +
-      parsed.topics.length -
-      dropped.size
-    : 0;
+  const keptCount = parsed ? parsed.items.length - dropped.size : 0;
 
   return (
     <div className="rounded-lg border border-black/10 p-4 dark:border-white/15">
@@ -68,8 +61,8 @@ export function CaptureBox({ timezone }: { timezone: string }) {
         Describe your week
       </label>
       <p className="mt-1 text-xs text-zinc-500">
-        Claude turns this into tasks and topics. It never decides your schedule —
-        the planner does that, the same way every time.
+        Claude turns this into work items. It never decides your schedule — the
+        planner does that, the same way every time.
       </p>
 
       <textarea
@@ -82,9 +75,7 @@ export function CaptureBox({ timezone }: { timezone: string }) {
       />
 
       <div className="mt-3 flex items-center justify-between gap-4">
-        <span className="text-xs text-zinc-500">
-          Times read in {timezone}
-        </span>
+        <span className="text-xs text-zinc-500">Times read in {timezone}</span>
         <button
           type="button"
           onClick={handleParse}
@@ -107,73 +98,57 @@ export function CaptureBox({ timezone }: { timezone: string }) {
       {parsed ? (
         <div className="mt-6 border-t border-black/10 pt-4 dark:border-white/10">
           <h3 className="text-sm font-medium">
-            Found {parsed.tasks.length} task
-            {parsed.tasks.length === 1 ? "" : "s"} and {parsed.topics.length}{" "}
-            topic{parsed.topics.length === 1 ? "" : "s"}
+            Found {parsed.items.length} item
+            {parsed.items.length === 1 ? "" : "s"}
           </h3>
           <p className="mt-1 text-xs text-zinc-500">
             Untick anything wrong. Nothing is saved until you confirm.
           </p>
 
           <ul className="mt-3 space-y-2">
-            {parsed.tasks.map((task, index) => {
-              const id = key("task", index);
+            {parsed.items.map((item, index) => {
+              const repeats = item.target_minutes_per_week !== null;
               return (
-                <li key={id} className="flex items-start gap-3 text-sm">
+                <li key={index} className="flex items-start gap-3 text-sm">
                   <input
                     type="checkbox"
-                    checked={!dropped.has(id)}
-                    onChange={() => toggle(id)}
+                    checked={!dropped.has(index)}
+                    onChange={() => toggle(index)}
                     className="mt-1"
-                    aria-label={`Include ${task.title}`}
+                    aria-label={`Include ${item.title}`}
                   />
                   <span className="flex-1">
-                    <span className="mr-2 text-zinc-400" aria-hidden>●</span>
-                    {task.title}
+                    <span
+                      className="mr-2 text-zinc-400"
+                      aria-hidden
+                      title={repeats ? "Every week" : "Fixed amount"}
+                    >
+                      {repeats ? "○" : "●"}
+                    </span>
+                    {item.title}
                     <span className="ml-2 text-xs text-zinc-500">
-                      {formatDuration(task.estimated_minutes)}
-                      {task.due_at
-                        ? ` · due ${new Date(task.due_at).toLocaleString("en-US", {
+                      {repeats
+                        ? `${formatDuration(item.target_minutes_per_week!)}/week`
+                        : formatDuration(item.estimated_minutes ?? 0)}
+                      {item.due_at
+                        ? ` · ${new Date(item.due_at).toLocaleString("en-US", {
                             timeZone: timezone,
                             month: "short",
                             day: "numeric",
                             hour: "numeric",
                             minute: "2-digit",
                           })}`
-                        : " · no deadline"}
-                      {task.splittable ? "" : " · one sitting"}
+                        : repeats
+                          ? ""
+                          : " · no deadline"}
+                      {repeats && item.confidence !== null
+                        ? ` · confidence ${item.confidence}/5`
+                        : ""}
+                      {!repeats && !item.splittable ? " · one sitting" : ""}
                     </span>
-                    {task.assumption ? (
+                    {item.assumption ? (
                       <span className="block text-xs italic text-amber-700 dark:text-amber-500">
-                        assumed: {task.assumption}
-                      </span>
-                    ) : null}
-                  </span>
-                </li>
-              );
-            })}
-
-            {parsed.topics.map((topic, index) => {
-              const id = key("topic", index);
-              return (
-                <li key={id} className="flex items-start gap-3 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={!dropped.has(id)}
-                    onChange={() => toggle(id)}
-                    className="mt-1"
-                    aria-label={`Include ${topic.name}`}
-                  />
-                  <span className="flex-1">
-                    <span className="mr-2 text-zinc-400" aria-hidden>○</span>
-                    {topic.name}
-                    <span className="ml-2 text-xs text-zinc-500">
-                      {formatDuration(topic.target_minutes_per_week)}/week ·
-                      confidence {topic.confidence}/5
-                    </span>
-                    {topic.assumption ? (
-                      <span className="block text-xs italic text-amber-700 dark:text-amber-500">
-                        assumed: {topic.assumption}
+                        assumed: {item.assumption}
                       </span>
                     ) : null}
                   </span>
@@ -199,7 +174,7 @@ export function CaptureBox({ timezone }: { timezone: string }) {
 
           <button
             type="button"
-            onClick={() => handleConfirm(parsed.tasks, parsed.topics)}
+            onClick={() => handleConfirm(parsed.items)}
             disabled={pending || keptCount === 0}
             className="mt-4 h-10 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
           >

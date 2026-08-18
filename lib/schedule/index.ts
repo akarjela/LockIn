@@ -5,7 +5,7 @@ import type { PlanInput, PlanResult } from "@/lib/schedule/types";
 
 export { computeFreeSlots, mergeIntervals, subtractIntervals, totalMinutes } from "@/lib/schedule/availability";
 export { packBlocks } from "@/lib/schedule/pack";
-export { priorityWeight, rankCandidates, scoreTask, scoreTopic, urgency } from "@/lib/schedule/score";
+export { priorityWeight, rankCandidates, scoreItem, urgency } from "@/lib/schedule/score";
 export * from "@/lib/schedule/types";
 
 /**
@@ -17,10 +17,9 @@ export * from "@/lib/schedule/types";
  */
 export function generatePlan(input: PlanInput): PlanResult {
   const candidates = rankCandidates(
-    input.tasks,
-    input.topics,
+    input.items,
     input.now,
-    input.topicMinutesAlready,
+    input.minutesAlready,
     input.to,
   );
 

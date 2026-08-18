@@ -4,14 +4,12 @@ import { revalidatePath } from "next/cache";
 
 import { requireUser } from "@/lib/auth";
 import { getSettings } from "@/lib/db/settings";
-import { createTask } from "@/lib/db/tasks";
-import { createTopic } from "@/lib/db/topics";
+import { createItem } from "@/lib/db/items";
 import {
   CaptureUnavailableError,
   parseCapture,
   type CaptureResult,
-  type TaskDraftPreview,
-  type TopicDraftPreview,
+  type ItemDraftPreview,
 } from "@/lib/ai/capture";
 import { regeneratePlan } from "@/lib/plan/generate";
 
@@ -54,28 +52,19 @@ export async function parseNotes(text: string): Promise<ParseState> {
 
 /** Writes confirmed drafts, then rebuilds the week around them. */
 export async function commitDrafts(drafts: {
-  tasks: TaskDraftPreview[];
-  topics: TopicDraftPreview[];
+  items: ItemDraftPreview[];
 }): Promise<{ created: number }> {
   const user = await requireUser();
 
-  for (const task of drafts.tasks) {
-    await createTask(user.id, {
-      title: task.title,
-      due_at: task.due_at,
-      estimated_minutes: task.estimated_minutes,
-      priority: task.priority,
-      splittable: task.splittable,
-    });
-  }
-
-  for (const topic of drafts.topics) {
-    await createTopic(user.id, {
-      name: topic.name,
-      target_at: topic.target_at,
-      target_minutes_per_week: topic.target_minutes_per_week,
-      confidence: topic.confidence,
-      priority: topic.priority,
+  for (const item of drafts.items) {
+    await createItem(user.id, {
+      title: item.title,
+      due_at: item.due_at,
+      estimated_minutes: item.estimated_minutes ?? undefined,
+      target_minutes_per_week: item.target_minutes_per_week ?? undefined,
+      confidence: item.confidence ?? undefined,
+      priority: item.priority,
+      splittable: item.splittable,
     });
   }
 
@@ -84,8 +73,7 @@ export async function commitDrafts(drafts: {
   await regeneratePlan(user.id);
 
   revalidatePath("/");
-  revalidatePath("/tasks");
-  revalidatePath("/topics");
+  revalidatePath("/work");
 
-  return { created: drafts.tasks.length + drafts.topics.length };
+  return { created: drafts.items.length };
 }

@@ -1,6 +1,6 @@
 # LockIN
 
-A weekly planner that scores your tasks and study topics, then packs them into
+A weekly planner that scores everything you want time for, then packs it into
 the time you actually have free.
 
 It has two halves: a pure scheduling engine that makes every decision, and a
@@ -10,6 +10,19 @@ thin Next.js app that stores data and renders the result.
 
 Next.js 16 (App Router) · TypeScript · Tailwind v4 · Supabase (Postgres + Google
 OAuth) · Vitest · Vercel
+
+## Describing your week
+
+With `ANTHROPIC_API_KEY` set, the box on `/work` turns prose into items:
+
+> *6.006 pset due Thursday, probably 3 hours. I'm shaky on dynamic programming
+> and want about 3h a week on it.*
+
+Claude only extracts; it never schedules. The deterministic engine still decides
+every block, which is what keeps plans reproducible and lets the whole scheduling
+suite run with no network. Drafts are shown for confirmation before anything is
+written, with an `assumed: ...` note wherever a field was inferred rather than
+stated. Without the key the rest of the app is unaffected.
 
 ## Local setup
 
@@ -71,16 +84,26 @@ Three pieces, deliberately separated:
 
 ## How scheduling works
 
-Three inputs: **availability** (recurring free windows), **tasks** (work with a
-deadline and an end state), and **topics** (study that never finishes, with a
-weekly minute target).
+Two inputs: **availability** (recurring free windows) and **work items**.
+
+An item is anything you want time for. Two optional fields carry the whole
+model:
+
+| Field | Meaning |
+| --- | --- |
+| `due_at` | A deadline or exam date. Absent for open-ended work. |
+| `estimated_minutes` *or* `target_minutes_per_week` | A fixed amount that burns down, or a weekly target that refills. Exactly one, enforced in the database. |
+
+These used to be two tables, `tasks` and `topics`. That split forced a
+categorisation decision that said nothing about the work — "is exam revision a
+task or a topic?" is a question about the schema, not about your week.
 
 ```
 weekly template  ->  expanded into real dates in your timezone
                  ->  minus calendar events and pinned blocks
                  ->  minus fragments too short to use        = free slots
 
-tasks + topics   ->  scored and ranked                       = candidates
+work items       ->  scored and ranked                       = candidates
 
 free slots + candidates  ->  greedy earliest-fit packer      = the week
 ```
@@ -95,18 +118,21 @@ two instants are 23 hours apart rather than 24.
 
 ### Two tiers, not one score
 
-Task and topic scores are not comparable, and no choice of weights makes them so.
-A topic starts every week at full deficit — worth 0.35 before anything else is
-considered — while a task's urgency only approaches 1 as its deadline arrives.
-Ranked on score alone, a routine study target reliably outranks a paper due in
-two days.
+Finite and recurring scores are not comparable, and no choice of weights makes
+them so. Recurring work starts every week at full deficit — worth 0.35 before
+anything else is considered — while finite urgency only approaches 1 as the
+deadline arrives. Ranked on score alone, a routine weekly target reliably
+outranks a paper due in two days.
 
-So ranking happens in two tiers. **Obligations** are anything with a deadline
+So ranking happens in two tiers. **Obligations** are anything with a due date
 inside the planning window; they claim time first, earliest-deadline-first (EDF
 is optimal for meeting deadlines on a single resource — if any order fits
 everything, EDF does). **Goals** are weekly targets and work due beyond the
-window; they fill what is left, ordered by score. A topic with an exam date
-inside the window is an obligation.
+window; they fill what is left, ordered by score.
+
+Note this is orthogonal to finite/recurring: a weekly item with an exam date
+inside the window is an obligation, which is exactly the case where study time
+genuinely is a deadline.
 
 ### Why greedy
 

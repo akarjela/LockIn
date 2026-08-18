@@ -1,4 +1,4 @@
-import type { Task, Topic } from "@/lib/db/types";
+import type { Item } from "@/lib/db/types";
 
 /** A contiguous stretch of instants the packer may place work into. */
 export interface FreeSlot {
@@ -10,7 +10,8 @@ export interface FreeSlot {
 
 /** Anything competing for time, normalised so the packer treats them alike. */
 export interface Candidate {
-  kind: "task" | "topic";
+  /** True when this refills weekly rather than burning down. Display only — the packer does not branch on it. */
+  recurring: boolean;
   id: string;
   label: string;
   /** Minutes the packer should try to place. */
@@ -42,15 +43,14 @@ export interface Candidate {
 
 /** One placed block, ready to be persisted as a `scheduled_blocks` row. */
 export interface PlannedBlock {
-  task_id: string | null;
-  topic_id: string | null;
+  item_id: string;
   starts_at: string;
   ends_at: string;
 }
 
 /** Work the packer could not place, with the reason — surfaced to the user. */
 export interface Unplaced {
-  kind: "task" | "topic";
+  recurring: boolean;
   id: string;
   label: string;
   minutesShort: number;
@@ -81,9 +81,8 @@ export interface PlanInput {
   slotMinutes: number;
   breakMinutes: number;
   dailyCapMinutes: number;
-  tasks: Task[];
-  topics: Topic[];
-  /** Minutes already committed to each topic in this window, by topic id. */
-  topicMinutesAlready: Map<string, number>;
+  items: Item[];
+  /** Minutes already committed to each item in this window, by item id. Recurring items only. */
+  minutesAlready: Map<string, number>;
   freeSlots: FreeSlot[];
 }

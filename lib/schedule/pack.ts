@@ -107,8 +107,7 @@ export function packBlocks({
       const endsAt = startsAt + take * 60_000;
 
       blocks.push({
-        task_id: candidate.kind === "task" ? candidate.id : null,
-        topic_id: candidate.kind === "topic" ? candidate.id : null,
+        item_id: candidate.id,
         starts_at: new Date(startsAt).toISOString(),
         ends_at: new Date(endsAt).toISOString(),
       });
@@ -121,7 +120,7 @@ export function packBlocks({
 
     if (remaining > 0) {
       unplaced.push({
-        kind: candidate.kind,
+        recurring: candidate.recurring,
         id: candidate.id,
         label: candidate.label,
         minutesShort: Math.round(remaining),

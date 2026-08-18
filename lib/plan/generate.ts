@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import { listAvailability, listBusyEvents } from "@/lib/db/availability";
 import { listBlocks, replacePlan } from "@/lib/db/plan";
 import { getSettings } from "@/lib/db/settings";
-import { listOpenTasks } from "@/lib/db/tasks";
-import { listTopics } from "@/lib/db/topics";
+import { listOpenItems } from "@/lib/db/items";
 import { computeFreeSlots } from "@/lib/schedule/availability";
 import { generatePlan } from "@/lib/schedule";
 import type { PlanResult } from "@/lib/schedule/types";
@@ -43,12 +42,11 @@ export async function regeneratePlan(
   const settings = await getSettings(userId);
   const window = planWindow(now, settings.timezone);
 
-  const [template, busyEvents, existingBlocks, tasks, topics] = await Promise.all([
+  const [template, busyEvents, existingBlocks, items] = await Promise.all([
     listAvailability(userId),
     listBusyEvents(userId, window.from, window.to),
     listBlocks(userId, window.from, window.to),
-    listOpenTasks(userId),
-    listTopics(userId, { activeOnly: true }),
+    listOpenItems(userId),
   ]);
 
   // Locked blocks are obstacles, not candidates — the user pinned them, so the
@@ -66,18 +64,17 @@ export async function regeneratePlan(
     })),
   ];
 
-  // Topic time already committed. Counted from locked blocks only: the unlocked
-  // ones are about to be deleted, and counting them would make each regeneration
-  // believe the weekly target was already met and schedule nothing.
-  const topicMinutesAlready = new Map<string, number>();
+  // Time already committed per item. Counted from locked blocks only: the
+  // unlocked ones are about to be deleted, and counting them would make each
+  // regeneration believe the weekly target was already met and schedule nothing.
+  const minutesAlready = new Map<string, number>();
   for (const block of locked) {
-    if (!block.topic_id) continue;
     const minutes =
       (new Date(block.ends_at).getTime() - new Date(block.starts_at).getTime()) /
       60_000;
-    topicMinutesAlready.set(
-      block.topic_id,
-      (topicMinutesAlready.get(block.topic_id) ?? 0) + minutes,
+    minutesAlready.set(
+      block.item_id,
+      (minutesAlready.get(block.item_id) ?? 0) + minutes,
     );
   }
 
@@ -99,9 +96,8 @@ export async function regeneratePlan(
     slotMinutes: settings.slot_minutes,
     breakMinutes: settings.break_minutes,
     dailyCapMinutes: settings.daily_cap_minutes,
-    tasks,
-    topics,
-    topicMinutesAlready,
+    items,
+    minutesAlready,
     freeSlots,
   });
 
