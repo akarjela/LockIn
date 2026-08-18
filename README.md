@@ -1,36 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LockIN
 
-## Getting Started
+A weekly planner that scores your tasks and study topics, then packs them into
+the time you actually have free.
 
-First, run the development server:
+> Full write-up (scheduling approach, scaling notes) comes in a later step. This
+> README currently covers setup and deployment.
+
+## Stack
+
+Next.js 16 (App Router) · TypeScript · Tailwind v4 · Supabase (Postgres + Google
+OAuth) · Vitest · Vercel
+
+## Local setup
 
 ```bash
+npm install
+cp .env.local.example .env.local   # then fill in the two values
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Both values come from your Supabase project under **Project Settings → API**.
+They are `NEXT_PUBLIC_*` on purpose — the anon/publishable key only grants what
+Row Level Security permits.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Supabase auth setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. **Google Cloud Console** → create an OAuth 2.0 Client ID (Web application).
+   Authorized redirect URI:
+   `https://<your-project-ref>.supabase.co/auth/v1/callback`
+2. **Supabase** → Authentication → Providers → Google: enable it and paste the
+   client ID and secret from step 1.
+3. **Supabase** → Authentication → URL Configuration:
+   - Site URL: your production URL (e.g. `https://lockin.vercel.app`)
+   - Additional redirect URLs: `http://localhost:3000/**` for local dev, plus
+     `https://*-<your-vercel-scope>.vercel.app/**` if you want preview
+     deployments to sign in.
 
-## Learn More
+## Deploying to Vercel
 
-To learn more about Next.js, take a look at the following resources:
+1. Push this repo to GitHub.
+2. Import it at [vercel.com/new](https://vercel.com/new). **Set the root
+   directory to `lockin/`** — the Next app is a subfolder of the repo.
+3. Add both environment variables from `.env.local.example` to the Vercel
+   project (Production, Preview, and Development).
+4. Deploy, then add the resulting URL to the Supabase URL configuration above.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Auth architecture
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Three pieces, deliberately separated:
 
-## Deploy on Vercel
+- **`proxy.ts`** (Next 16's rename of `middleware.ts`) refreshes the Supabase
+  session on every request. Server Components cannot write cookies, so this is
+  the only place a rotated token can be persisted. It also does an *optimistic*
+  redirect for signed-out users.
+- **`lib/auth.ts`** is the real security boundary: `requireUser()` calls
+  `supabase.auth.getUser()`, which validates the JWT against the Auth server
+  rather than trusting a cookie. It is `React.cache`d per request.
+- **RLS in Postgres** is the last line — every table is scoped to `auth.uid()`,
+  so a missed check in application code still cannot leak another user's rows.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Scripts
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Command         | Does                                  |
+| --------------- | ------------------------------------- |
+| `npm run dev`   | Dev server on http://localhost:3000   |
+| `npm run build` | Production build (what Vercel runs)   |
+| `npm run lint`  | ESLint                                |
