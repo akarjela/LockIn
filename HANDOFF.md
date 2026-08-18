@@ -31,6 +31,7 @@ a wrong week.
 | Database | Migrations 0001 and 0002 both applied to hosted Supabase |
 | RLS | Verified: an anonymous request with the public anon key returns `[]` |
 | Dev server | http://localhost:3000 |
+| Production | https://lock-in-lake-sigma.vercel.app — sign-in and planning verified |
 
 Routes: `/` (the week), `/work` (everything you want time for), `/availability`,
 `/login`, `/auth/callback`.
@@ -150,15 +151,6 @@ the harness's background mode.
 
 ## Next steps
 
-**First — the one untested path.** The live Claude parse was verified against the
-*old* two-type schema, before unification. `lib/ai/capture.ts` was rewritten for
-the unified shape and has only been typechecked since. Type a note containing
-both a deadline and a weekly target and confirm it produces two items with the
-right shapes:
-
-> *6.006 pset due Thursday, about 3 hours. I'm shaky on dynamic programming and
-> want 3h a week on it.*
-
 **Unbuilt, from the original plan.**
 
 - **Google Calendar sync.** The `calendar_events` table exists and the busy-time
@@ -175,9 +167,10 @@ right shapes:
   comment is wrong.
 - Local Node is 20.20.2; `@supabase/supabase-js` warns it wants 22+, and Vercel
   defaults to 22. Local and production runtimes differ.
-- Never deployed. No Vercel project exists yet. When one is made: root directory
-  is `./` (this repo's root *is* the Next app), and `ANTHROPIC_API_KEY` plus both
-  `NEXT_PUBLIC_SUPABASE_*` vars need setting there.
+- Deployed at https://lock-in-lake-sigma.vercel.app (root directory `./`, since
+  this repo's root *is* the Next app). Supabase's Site URL and Additional
+  Redirect URLs must list that domain with a `/**` wildcard, or sign-in falls
+  back to Site URL and lands on `/?code=` instead of `/auth/callback`.
 - Earliest-fit fragments some work — a 90-minute item can become 45+45 across two
   evenings even when a longer contiguous slot exists later. Deliberate (earlier =
   more slack before the deadline). A "prefer contiguous" pass is possible.
