@@ -1,3 +1,4 @@
+import { CaptureBox } from "@/components/capture-box";
 import { SiteHeader } from "@/components/site-header";
 import { addTask, completeTask, removeTask, reopenTask } from "@/app/tasks/actions";
 import { requireUser } from "@/lib/auth";
@@ -32,9 +33,18 @@ export default async function TasksPage() {
           first.
         </p>
 
+        <div className="mt-8">
+          <CaptureBox timezone={settings.timezone} />
+        </div>
+
+        <details className="mt-6">
+          <summary className="cursor-pointer text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100">
+            Or add one by hand
+          </summary>
+
         <form
           action={addTask}
-          className="mt-8 rounded-lg border border-black/10 p-4 dark:border-white/15"
+          className="mt-4 rounded-lg border border-black/10 p-4 dark:border-white/15"
         >
           {/* The browser knows the user's zone; the server does not. */}
           <input type="hidden" name="timezone" value={settings.timezone} />
@@ -100,6 +110,7 @@ export default async function TasksPage() {
             </div>
           </div>
         </form>
+        </details>
 
         <section className="mt-10">
           <h2 className="text-sm font-medium text-zinc-500">

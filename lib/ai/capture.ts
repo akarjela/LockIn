@@ -1,0 +1,217 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod";
+
+import type { Confidence, Priority } from "@/lib/db/types";
+import { toZonedDate, zonedTimeToInstant } from "@/lib/schedule/tz";
+
+/**
+ * Turns a brain-dump into structured drafts.
+ *
+ * Server-only — it reads ANTHROPIC_API_KEY, which must never reach the browser.
+ *
+ * The division of labour is the point of the whole design: Claude reads English
+ * and produces *drafts*, and the deterministic engine does every bit of the
+ * actual scheduling. Nothing here decides when work happens. That keeps plans
+ * reproducible and testable, and means a bad parse costs you an edit rather than
+ * a wrong week.
+ *
+ * Drafts are never written straight to the database — the caller shows them to
+ * the user first. An extraction step is exactly where a confident-sounding
+ * mistake ("2 hours" read as "2 days") is cheap to catch and expensive to miss.
+ */
+
+/**
+ * Claude returns *local wall-clock* strings, not instants.
+ *
+ * Asking a model to do timezone arithmetic is asking for an off-by-an-hour bug
+ * twice a year. It writes "2026-08-20T23:59" and `zonedTimeToInstant` — the same
+ * function the scheduler uses — resolves it against the user's zone here.
+ */
+const LOCAL_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+const CaptureSchema = z.object({
+  tasks: z.array(
+    z.object({
+      title: z.string(),
+      /** "YYYY-MM-DDTHH:MM" in the user's local time, or null if none was given. */
+      due_local: z.string().nullable(),
+      estimated_minutes: z.number(),
+      /** 1 high, 2 normal, 3 low. */
+      priority: z.number(),
+      splittable: z.boolean(),
+      /** What was assumed rather than stated, so the user can check it. */
+      assumption: z.string().nullable(),
+    }),
+  ),
+  topics: z.array(
+    z.object({
+      name: z.string(),
+      target_minutes_per_week: z.number(),
+      /** 1 shaky .. 5 solid. */
+      confidence: z.number(),
+      priority: z.number(),
+      /** Exam or target date, local wall clock, or null. */
+      target_local: z.string().nullable(),
+      assumption: z.string().nullable(),
+    }),
+  ),
+  /** Anything that could not be turned into a task or topic. */
+  unclear: z.array(z.string()),
+});
+
+export interface TaskDraftPreview {
+  title: string;
+  due_at: string | null;
+  estimated_minutes: number;
+  priority: Priority;
+  splittable: boolean;
+  assumption: string | null;
+}
+
+export interface TopicDraftPreview {
+  name: string;
+  target_minutes_per_week: number;
+  confidence: Confidence;
+  priority: Priority;
+  target_at: string | null;
+  assumption: string | null;
+}
+
+export interface CaptureResult {
+  tasks: TaskDraftPreview[];
+  topics: TopicDraftPreview[];
+  unclear: string[];
+}
+
+export class CaptureUnavailableError extends Error {}
+
+function clamp(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/** Local wall-clock text -> instant, via the scheduler's own zone arithmetic. */
+function toInstant(local: string | null, timezone: string): string | null {
+  const match = local?.match(LOCAL_DATETIME);
+  if (!match) return null;
+
+  const [, year, month, day, hour, minute] = match.map(Number);
+  return zonedTimeToInstant(
+    { year, month, day },
+    hour * 60 + minute,
+    timezone,
+  ).toISOString();
+}
+
+function systemPrompt(now: Date, timezone: string): string {
+  const today = toZonedDate(now, timezone);
+  const weekdays = [
+    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+  ];
+
+  return `You extract tasks and study topics from a person's notes about their week.
+
+Today is ${weekdays[today.weekday]}, ${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")} in timezone ${timezone}.
+
+You are NOT scheduling anything. A separate deterministic planner decides when
+work happens. Your only job is to turn prose into structured items, faithfully.
+
+TASK vs TOPIC
+- A task has an end state: "finish the pset", "email the registrar".
+- A topic is ongoing study that never completes: "dynamic programming", "Spanish".
+- If something is phrased as recurring practice or revision, it is a topic.
+
+DATES
+- Write local wall-clock times as "YYYY-MM-DDTHH:MM". Never include a timezone
+  or offset; never convert to UTC.
+- Resolve relative dates against today's date above. "Thursday" means the next
+  Thursday that has not yet passed. "Next week" means seven days out.
+- A date with no time of day means 23:59 for a deadline, 09:00 for an exam.
+- If no deadline is stated or implied, use null. Do not invent one.
+
+ESTIMATES
+- Use a stated duration when there is one ("about 3 hours" -> 180).
+- Otherwise infer something plausible from the work described, and record what
+  you assumed in "assumption".
+- estimated_minutes must be between 5 and 1440.
+
+OTHER FIELDS
+- priority: 1 high, 2 normal, 3 low. Default 2 unless urgency or importance is
+  expressed. A deadline alone is not high priority — the planner already handles
+  deadlines.
+- splittable: false only if the work must happen in one sitting (an exam, a
+  practice test, a call). Default true.
+- confidence (topics): 1 shaky .. 5 solid. Map phrases like "I'm terrible at" to
+  1-2 and "just keeping it warm" to 4-5. Default 3.
+- target_minutes_per_week (topics): default 120 unless the person says otherwise.
+
+ASSUMPTIONS
+- "assumption" must say what you inferred that the person did not state, in one
+  short phrase — e.g. "estimated 2h; no duration given". Use null when every
+  field came from what they actually wrote.
+
+UNCLEAR
+- Put anything you could not confidently turn into a task or topic into
+  "unclear", quoting their words. Do not guess to empty this list.`;
+}
+
+/**
+ * Parses free text into drafts.
+ *
+ * @throws CaptureUnavailableError when no API key is configured, so the caller
+ *         can show a setup hint rather than a stack trace.
+ */
+export async function parseCapture(
+  text: string,
+  { now = new Date(), timezone }: { now?: Date; timezone: string },
+): Promise<CaptureResult> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new CaptureUnavailableError(
+      "ANTHROPIC_API_KEY is not set, so notes cannot be parsed. Add it to .env.local.",
+    );
+  }
+
+  const client = new Anthropic();
+
+  const response = await client.messages.parse({
+    model: "claude-opus-5",
+    max_tokens: 16000,
+    // Extraction is not hard reasoning, but resolving "Thursday" against today
+    // is where a careless answer would be wrong rather than merely vague.
+    output_config: {
+      effort: "medium",
+      format: zodOutputFormat(CaptureSchema),
+    },
+    system: systemPrompt(now, timezone),
+    messages: [{ role: "user", content: text }],
+  });
+
+  const parsed = response.parsed_output;
+  if (!parsed) {
+    throw new Error("Could not read a plan out of that. Try rephrasing it.");
+  }
+
+  // Ranges are re-clamped here rather than trusted: the schema says "number",
+  // and a value outside these bounds would be rejected by a database check
+  // constraint further down with a far less helpful message.
+  return {
+    tasks: parsed.tasks.map((task) => ({
+      title: task.title.trim().slice(0, 200),
+      due_at: toInstant(task.due_local, timezone),
+      estimated_minutes: clamp(task.estimated_minutes, 5, 1440, 30),
+      priority: clamp(task.priority, 1, 3, 2) as Priority,
+      splittable: task.splittable,
+      assumption: task.assumption,
+    })),
+    topics: parsed.topics.map((topic) => ({
+      name: topic.name.trim().slice(0, 120),
+      target_minutes_per_week: clamp(topic.target_minutes_per_week, 15, 10080, 120),
+      confidence: clamp(topic.confidence, 1, 5, 3) as Confidence,
+      priority: clamp(topic.priority, 1, 3, 2) as Priority,
+      target_at: toInstant(topic.target_local, timezone),
+      assumption: topic.assumption,
+    })),
+    unclear: parsed.unclear,
+  };
+}
