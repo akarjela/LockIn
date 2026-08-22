@@ -21,42 +21,52 @@ a wrong week.
 
 ## Current state
 
-**Code is complete, builds clean, and is fully tested. Google Calendar sync has
-not yet run against real Google** — see "Before calendar sync works" below. It is
-three setup steps, none of them code.
+**Code is complete and locally configured. The one thing not yet done is the
+browser half** — nobody has clicked "Connect Google Calendar" or run
+`lockin login`, so no real event has been synced.
 
 | | |
 | --- | --- |
-| Repo | `akarjela/LockIn`, branch `main` |
+| Repo | `akarjela/LockIn`, branch `feat/calendar-sync-and-cli`, **not pushed** |
 | Tests | 57 passing (`npm test`) |
 | Build / lint / typecheck | All clean |
-| Database | Migrations 0001 and 0002 applied. **0003 is not applied yet.** |
-| RLS | Verified: an anonymous request with the public anon key returns `[]` |
+| Database | Migrations 0001, 0002 and 0003 all applied to hosted Supabase |
+| Local env | All six variables present and parsed by `@next/env` |
 | Dev server | http://localhost:3000 |
-| Production | https://lock-in-lake-sigma.vercel.app |
+| Production | https://lock-in-lake-sigma.vercel.app — **env vars not added yet** |
 
 Routes: `/` (the week), `/work`, `/availability`, `/login`, `/auth/callback`,
 `POST /api/calendar/sync`.
 
-**Verified by hand this session:** the CLI end to end as far as an unauthenticated
-process can go — `help`, `work` (clean "not signed in"), and `login` producing a
-correct PKCE authorize URL pointed at the loopback port. Calendar sync is covered
-by unit tests on its pure core; its network path is unexercised.
+**Verified by hand this session**, all without a browser:
 
-### Before calendar sync works
+- `google_credentials` exists and its isolation works: `service_role` reads it
+  (`200 []`), the anon key is refused outright (`401`, Postgres `42501`). That is
+  the deny-all RLS plus the explicit `revoke`, both doing their job.
+- The Google client id/secret are valid — a refresh with a deliberately bogus
+  token returns `invalid_grant`, not `invalid_client`.
+- Supabase's Google provider uses the **same** client id as `GOOGLE_CLIENT_ID`.
+  A mismatch here is the nastiest possible bug: sign-in keeps working while token
+  refresh dies silently an hour after connecting.
+- The authorize URL carries `.../auth/calendar.readonly` alongside email/profile.
+- `POST /api/calendar/sync` with no session returns `401 {"error":"Not signed
+  in."}` rather than an HTML login page — the `proxy.ts` change for API callers.
+- The CLI as far as an unauthenticated process reaches: `help`, a clean "not
+  signed in" through the full import chain, and `login` producing a correct PKCE
+  authorize URL aimed at the loopback port.
 
-1. **Apply migration 0003.** `supabase/migrations/0003_google_calendar.sql` into
-   the Supabase SQL Editor. Idempotent, like the others.
-2. **Add three environment variables** to `.env.local` and to Vercel:
-   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (the same pair Supabase's Google
-   provider already has) and `SUPABASE_SERVICE_ROLE_KEY`. Until they are set the
-   panel on `/availability` says exactly which are missing and everything else
-   works untouched — the same bargain `ANTHROPIC_API_KEY` gets.
-3. **Enable the Google Calendar API** in the Google Cloud project, and while the
-   consent screen is in Testing, add yourself under Test users.
+### What is left
 
-For `lockin login`, also add `http://127.0.0.1:8765` to Supabase →
-Authentication → URL Configuration → Additional Redirect URLs.
+1. **Connect a calendar** at `/availability`, then confirm a real meeting removes
+   time from the week.
+2. **`http://127.0.0.1:8765`** must be in Supabase → Authentication → URL
+   Configuration → Additional Redirect URLs, or `lockin login` comes back to the
+   Site URL instead of the loopback. Unverified — it cannot be checked without
+   running the flow.
+3. **Vercel needs the three new variables** (`GOOGLE_CLIENT_ID`,
+   `GOOGLE_CLIENT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`) and a redeploy. Until
+   then production shows the setup hint and behaves exactly as before.
+4. **Push the branch** and merge.
 
 ## Files that matter
 
