@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { currentSupabase } from "@/lib/supabase/current";
 import type { ScheduledBlock } from "@/lib/db/types";
 
 export async function listBlocks(
@@ -6,7 +6,7 @@ export async function listBlocks(
   from: Date,
   to: Date,
 ): Promise<ScheduledBlock[]> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { data, error } = await supabase
     .from("scheduled_blocks")
@@ -40,7 +40,7 @@ export async function replacePlan(
   >,
   planRunId: string,
 ): Promise<ScheduledBlock[]> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { error: deleteError } = await supabase
     .from("scheduled_blocks")
@@ -77,7 +77,7 @@ export async function setBlockLocked(
   id: string,
   locked: boolean,
 ): Promise<ScheduledBlock> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { data, error } = await supabase
     .from("scheduled_blocks")

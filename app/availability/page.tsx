@@ -1,3 +1,4 @@
+import { CalendarConnection } from "@/components/calendar-connection";
 import { SiteHeader } from "@/components/site-header";
 import {
   addAvailability,
@@ -5,8 +6,12 @@ import {
   saveSettings,
 } from "@/app/availability/actions";
 import { requireUser } from "@/lib/auth";
-import { listAvailability } from "@/lib/db/availability";
+import { listAvailability, listBusyEvents } from "@/lib/db/availability";
+import { getCredentials } from "@/lib/db/google";
 import { getSettings } from "@/lib/db/settings";
+import type { GoogleCredentials } from "@/lib/db/types";
+import { isCalendarConfigured, missingCalendarConfig } from "@/lib/google/env";
+import { syncWindow } from "@/lib/google/sync";
 import {
   WEEKDAY_NAMES,
   formatDuration,
@@ -18,12 +23,40 @@ export const metadata = { title: "Availability · LockIN" };
 /** Monday-first for display; the stored `weekday` stays 0 = Sunday. */
 const DISPLAY_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 
-export default async function AvailabilityPage() {
+/** First value only — a repeated query param is a URL someone hand-edited. */
+function one(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+export default async function AvailabilityPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const user = await requireUser();
-  const [settings, blocks] = await Promise.all([
+  const params = await searchParams;
+
+  const calendarWindow = syncWindow(new Date());
+  const configured = isCalendarConfigured();
+
+  const [settings, blocks, credentials, busyEvents] = await Promise.all([
     getSettings(user.id),
     listAvailability(user.id),
+    // Reading credentials needs the service-role key, so it is only attempted
+    // once the environment is known to have one.
+    configured
+      ? getCredentials(user.id)
+      : Promise.resolve<GoogleCredentials | null>(null),
+    listBusyEvents(user.id, calendarWindow.from, calendarWindow.to),
   ]);
+
+  // `?calendar=connected` comes back from the OAuth round trip, where there is
+  // no server action to hold a return value.
+  const connectMessage =
+    one(params.calendar) === "connected"
+      ? "Google Calendar connected. Sync now to pull your events in."
+      : one(params.calendar_message);
 
   const weeklyMinutes = blocks.reduce(
     (sum, block) => sum + (block.end_minute - block.start_minute),
@@ -164,6 +197,23 @@ export default async function AvailabilityPage() {
             </div>
           )}
         </section>
+
+        <CalendarConnection
+          connection={
+            credentials
+              ? {
+                  email: credentials.google_email,
+                  lastSyncedAt: credentials.last_synced_at,
+                  lastSyncError: credentials.last_sync_error,
+                }
+              : null
+          }
+          missingConfig={missingCalendarConfig()}
+          busyEventCount={busyEvents.length}
+          timezone={settings.timezone}
+          message={connectMessage}
+          error={one(params.calendar_error)}
+        />
 
         <section className="mt-10">
           <h2 className="text-sm font-medium text-zinc-500">Planner settings</h2>

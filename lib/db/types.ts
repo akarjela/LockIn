@@ -107,6 +107,28 @@ export interface CalendarEvent {
   synced_at: string;
 }
 
+/**
+ * A user's Google Calendar grant.
+ *
+ * Never reachable from the browser: `google_credentials` has RLS enabled with no
+ * policies, so only the service-role key can read it. See migration 0003.
+ */
+export interface GoogleCredentials {
+  user_id: string;
+  /** The Google account that granted access — not necessarily the login address. */
+  google_email: string | null;
+  access_token: string;
+  expires_at: string;
+  /** Null when Google fast-pathed consent and issued no new refresh token. */
+  refresh_token: string | null;
+  /** Space-separated scopes Google actually granted. */
+  scope: string | null;
+  last_synced_at: string | null;
+  last_sync_error: string | null;
+  connected_at: string;
+  updated_at: string;
+}
+
 export interface ScheduledBlock {
   id: string;
   user_id: string;

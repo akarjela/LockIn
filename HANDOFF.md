@@ -1,7 +1,8 @@
 # LockIN — handoff
 
-_Last updated: 2026-08-18. Written at the end of a session that took the project
-from an auth-only scaffold to a working planner._
+_Last updated: 2026-08-18. Written at the end of a session that added Google
+Calendar sync and the `lockin` CLI — the two things the previous handoff listed
+as unbuilt._
 
 ## Goal
 
@@ -20,25 +21,42 @@ a wrong week.
 
 ## Current state
 
-**Working and verified.**
+**Code is complete, builds clean, and is fully tested. Google Calendar sync has
+not yet run against real Google** — see "Before calendar sync works" below. It is
+three setup steps, none of them code.
 
 | | |
 | --- | --- |
-| Repo | `akarjela/LockIn`, branch `main`, everything pushed |
-| Working tree | Clean — nothing uncommitted |
-| Tests | 33 passing (`npm test`) |
+| Repo | `akarjela/LockIn`, branch `main` |
+| Tests | 57 passing (`npm test`) |
 | Build / lint / typecheck | All clean |
-| Database | Migrations 0001 and 0002 both applied to hosted Supabase |
+| Database | Migrations 0001 and 0002 applied. **0003 is not applied yet.** |
 | RLS | Verified: an anonymous request with the public anon key returns `[]` |
 | Dev server | http://localhost:3000 |
-| Production | https://lock-in-lake-sigma.vercel.app — sign-in and planning verified |
+| Production | https://lock-in-lake-sigma.vercel.app |
 
-Routes: `/` (the week), `/work` (everything you want time for), `/availability`,
-`/login`, `/auth/callback`.
+Routes: `/` (the week), `/work`, `/availability`, `/login`, `/auth/callback`,
+`POST /api/calendar/sync`.
 
-**Verified by hand this session:** Google sign-in, the auth redirect chain, one
-live Claude parse (against the pre-unification schema), and a full realistic-week
-plan through the engine.
+**Verified by hand this session:** the CLI end to end as far as an unauthenticated
+process can go — `help`, `work` (clean "not signed in"), and `login` producing a
+correct PKCE authorize URL pointed at the loopback port. Calendar sync is covered
+by unit tests on its pure core; its network path is unexercised.
+
+### Before calendar sync works
+
+1. **Apply migration 0003.** `supabase/migrations/0003_google_calendar.sql` into
+   the Supabase SQL Editor. Idempotent, like the others.
+2. **Add three environment variables** to `.env.local` and to Vercel:
+   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (the same pair Supabase's Google
+   provider already has) and `SUPABASE_SERVICE_ROLE_KEY`. Until they are set the
+   panel on `/availability` says exactly which are missing and everything else
+   works untouched — the same bargain `ANTHROPIC_API_KEY` gets.
+3. **Enable the Google Calendar API** in the Google Cloud project, and while the
+   consent screen is in Testing, add yourself under Test users.
+
+For `lockin login`, also add `http://127.0.0.1:8765` to Supabase →
+Authentication → URL Configuration → Additional Redirect URLs.
 
 ## Files that matter
 
@@ -52,15 +70,17 @@ Nothing is mid-edit. These are the files to read first, in dependency order.
 - `lib/schedule/pack.ts` — greedy earliest-fit packer
 - `lib/schedule/index.ts` — `generatePlan()`, the entry point
 
-**The bridge** — moves data, makes no decisions.
+**The bridges** — move data, make no decisions.
 
 - `lib/plan/generate.ts` — loads, runs the engine, persists
+- `lib/google/sync.ts` — pulls Google Calendar into `calendar_events`
 
 **Data**
 
 - `lib/db/types.ts` — `Item`, the unified type
-- `lib/db/items.ts` — queries
-- `supabase/migrations/0001_core_schema.sql`, `0002_unify_items.sql`
+- `lib/db/items.ts`, `lib/db/availability.ts`, `lib/db/plan.ts`
+- `lib/supabase/current.ts` — which Supabase client `lib/db/*` uses (see below)
+- `supabase/migrations/0001…0003`
 
 **Claude**
 
@@ -68,58 +88,85 @@ Nothing is mid-edit. These are the files to read first, in dependency order.
 - `app/capture/actions.ts` — parse (writes nothing) and commit (writes, rebuilds)
 - `components/capture-box.tsx` — the review-before-save UI
 
-**Tests** — `lib/schedule/scenario.test.ts` is the one to read. It plans a
+**Google Calendar**
+
+- `lib/google/calendar.ts` — `toCalendarEventRow` is the pure core; read it first
+- `lib/google/oauth.ts` — token refresh and scope inspection
+- `lib/google/connect.ts` — captures the grant at the OAuth callback
+- `lib/db/google.ts` — credential storage, service-role only
+
+**CLI**
+
+- `cli/index.mts` — entrypoint; its import order is load-bearing
+- `cli/session.mts` — loopback Google sign-in, session file
+- `cli/args.mts` — the pure, tested half
+
+**Tests** — `lib/schedule/scenario.test.ts` is still the one to read. It plans a
 realistic week end to end and asserts no calendar collisions, no overlaps, and
 every deadline met. It has caught two real design flaws.
 
 ## What changed this session
 
-Started from: Next.js scaffold plus Supabase Google auth. No data model, no
-scheduling, four dead nav links.
+Started from: a working planner with two features listed as unbuilt.
 
-1. **Schema** — six tables, all under RLS scoped to `auth.uid()` with `with check`
-   as well as `using`, so the browser-side key cannot write rows it does not own.
-2. **The engine** — timezone-correct availability expansion, scoring, packing.
-3. **The app** — `/work`, `/availability`, and a week view with per-block pinning.
-   Pinned blocks become obstacles the packer routes around rather than moves.
-4. **Natural-language capture** — the "describe your week" box.
-5. **Unification** — `tasks` and `topics` collapsed into one `items` table.
+1. **Google Calendar sync.** `calendar_events` had existed since 0001 and the
+   busy-time subtraction was already written and tested — nothing filled the
+   table. Now `/availability` connects an account read-only, `lib/google/sync.ts`
+   caches events, and the engine subtracts them exactly as it always would have.
+2. **The `lockin` CLI.** `login`, `week`, `plan`, `work`, `add`, `done`,
+   `capture`, `sync`, `calendar`. Reuses `lib/plan/` and `lib/schedule/`
+   unchanged, which is what the purity was for.
 
 ### Decisions worth not re-litigating
 
-**Wall-clock vs instants never share a type.** Availability is wall-clock
-("Tuesdays 18:00–21:00"); deadlines and blocks are instants. `tz.ts` is the only
-converter. A test pins 18:00 either side of the March DST change, where the
-instants are 23 hours apart rather than 24.
+Everything from the previous handoff still holds — **two tiers not one score**,
+**wall-clock vs instants never share a type**, **greedy on purpose**, **`deadline`
+and `latestFinish` are separate**, **one item type**. Added this session:
 
-**Ranking is two-tier, not one score.** Finite and recurring scores are not
-comparable and no weighting makes them so — recurring work starts each week at
-full deficit (0.35 before anything else), while finite urgency only nears 1 at
-the deadline. Obligations (a due date inside the window) claim time first,
-earliest-deadline-first. Goals fill the rest, by score. This is orthogonal to
-finite/recurring: a weekly item with an exam date inside the window is an
-obligation.
+**Connecting a calendar is separate from signing in.** Folding the calendar scope
+into sign-in would make every new user hand over their whole calendar before
+seeing what the app does, and most of LockIN works fine without it.
 
-**The packer is greedy on purpose.** Optimal packing is NP-hard and, worse,
-unstable — a small edit would reshuffle the whole week. Greedy changes only where
-the input changed.
+**Busy is not the same as "on the calendar."** All-day events, events marked
+free, invitations you declined, and working-location markers are all stored and
+none of them block. The all-day rule is the one that looks wrong and is not: the
+error is asymmetric. A wrongly-busy all-day event silently deletes a whole day of
+availability and the only symptom is that work stops fitting; a wrongly-free one
+costs nothing, because a real all-day commitment is something you would also take
+out of your availability template.
 
-**`deadline` and `latestFinish` are separate fields.** One drives urgency and
-ordering; the other is the hard packing constraint. See failed attempt #2.
+**The Google refresh token is the one thing its owner cannot read.** Every other
+table is reachable by its owner through the browser's anon key, because RLS makes
+that safe. `google_credentials` has RLS enabled with **no policies at all**, so
+only the service-role key can touch it. A refresh token grants access to a
+third-party account, and an XSS on this origin must not be able to walk off with
+one.
 
-**One item type.** `estimated_minutes` XOR `target_minutes_per_week`, enforced by
-a check constraint. `archived` doubles as "paused".
+**Sync upserts, then prunes — never deletes first.** Delete-then-insert leaves a
+window with no busy times, and a plan regenerated inside it schedules straight
+over your meetings. Every row a run writes carries the same `synced_at`, and the
+prune deletes anything older *inside the synced window*. Keying on a list of
+surviving ids instead would put a few hundred uuids in a query string.
+
+**The CLI signs in with Google, not a password.** Any other route risks Supabase
+minting a second identity, and the symptom is a CLI that works perfectly while
+showing an empty week. Loopback + PKCE lands on the same user as the browser.
+
+**`lib/supabase/current.ts` is module-level mutable state, deliberately.** The
+alternative was threading a client argument through every query function and
+every caller of one. The rule that makes it safe: only a CLI entrypoint calls
+`setSupabaseFactory`, and only at startup. The web server never calls it, so
+there is no request-scoped state to leak between users.
 
 ## Failed attempts
 
-Kept because each one is a trap that looks correct.
+Kept because each one is a trap that looks correct. The first six are from
+earlier sessions and still apply.
 
-**1. Scoring tasks and topics on one comparable number.** The code claimed they
-were "comparable by construction". They were not. The scenario test produced a
-week where a study goal ate Monday night and pushed a pset due Wednesday to 21:40
-*on Wednesday* — Algorithms scored 0.813 against the pset's 0.489. Tuning weights
-cannot fix it because the two are not on the same axis. Fixed by tiering on
-obligation-vs-goal. **Do not collapse the tiers back into one score.**
+**1. Scoring tasks and topics on one comparable number.** The scenario test
+produced a week where a study goal ate Monday night and pushed a pset due
+Wednesday to 21:40 *on Wednesday*. Tuning weights cannot fix it because the two
+are not on the same axis. **Do not collapse the tiers back into one score.**
 
 **2. Treating a deadline as a hard packing constraint.** For a *past* deadline
 that excludes all remaining time, so overdue work was silently dropped — the more
@@ -128,49 +175,66 @@ overdue something was, the more invisible it became. Fixed by splitting
 
 **3. Detecting the unplaced reason only when a slot was skipped.** Limits usually
 *truncate* a placement mid-slot rather than skip it, so everything reported
-`no-free-time`. Flags now record truncation too.
+`no-free-time`.
 
-**4. Migration 0001, first run.** Two failures: `create extension pgcrypto`
-(unnecessary — `gen_random_uuid()` is core Postgres 13+ — and the SQL Editor role
-often cannot create extensions), and three `create trigger` statements, which have
-no `if not exists` in Postgres, so any retry after a partial run died there. Both
+**4. Migration 0001, first run.** `create extension pgcrypto` (unnecessary and
+usually not permitted) and three `create trigger` statements, which have no
+`if not exists` in Postgres, so any retry after a partial run died there. All
 migrations are now fully idempotent.
 
 **5. Instructing "paste `path/to/file.sql`".** Read literally, and Postgres got
-the filename as the query. Migrations are now loaded to the clipboard with
-`pbcopy` instead. Note copying anything else — an error message, say — silently
-wipes it.
+the filename as the query. Migrations are loaded to the clipboard with `pbcopy`
+instead. Note copying anything else — an error message, say — silently wipes it.
 
 **6. A too-greedy refactor of `lib/db/types.ts`.** A replacement spanning from
-`Task` to `remainingMinutes` also deleted `AvailabilityBlock`, `CalendarEvent`,
-and `ScheduledBlock` in between. Caught by `tsc`. Anchor edits on both ends.
+`Task` to `remainingMinutes` also deleted three interfaces in between. Caught by
+`tsc`. Anchor edits on both ends.
 
-**7. Backgrounding the dev server with `&`.** It outlived its shell in a way that
-left a second server on a second port and a confusing "port in use" error. Use
-the harness's background mode.
+**7. Backgrounding the dev server with `&`.** It outlived its shell and left a
+second server on a second port. Use the harness's background mode.
+
+**8. Assuming `.env.local` is loaded for a plain node process.** It is not —
+`next dev` does that, and nothing does it for the CLI. Worse, `lib/env.ts` reads
+its variables *at module load* and throws, so a static import anywhere in
+`cli/index.mts` gets hoisted above the loader and dies before it runs. Every
+import in that file past the env load is dynamic on purpose. Do not "tidy" them.
+
+**9. Node 20 has no global `WebSocket`, and `createClient` wants one.**
+supabase-js builds a Realtime client eagerly, which resolves a WebSocket
+implementation and throws when it cannot find one — killing every CLI command at
+startup over a socket that is never opened. Fixed by passing a `transport` stub
+rather than adding `ws` as a dependency. `cli/session.mts` says where to delete it
+once the project is on Node 22.
+
+**10. `vitest.config.mts` has an explicit `include`.** New tests outside
+`lib/**/*.test.ts` are silently not run — the suite goes green having skipped
+them. `cli/**/*.test.mts` is now listed too. Check the file count, not just the
+tick.
 
 ## Next steps
 
-**Unbuilt, from the original plan.**
-
-- **Google Calendar sync.** The `calendar_events` table exists and the busy-time
-  subtraction is written and tested — but nothing populates the table, so it is
-  inert. Needs calendar OAuth scopes, provider-token storage, and a sync route.
-- **The `lockin` CLI.** Would reuse `lib/schedule/` and `lib/plan/` unchanged,
-  which is what the purity was for.
+**Setup, not code.** The three steps under "Before calendar sync works", then
+connect an account on `/availability` and confirm a meeting actually removes time
+from the week.
 
 **Known rough edges.**
 
+- Calendar sync is manual — a button and a route, no cron. `POST
+  /api/calendar/sync` is session-authenticated, so a scheduled job would need a
+  different credential.
+- The CLI stores a session at `~/.config/lockin/session.json`, mode 600. It is
+  not encrypted, and anything running as you can read it.
+- `lockin sync` needs the same three Google variables in the shell's environment
+  or in `.env.local` — the service-role key included, since it reads credentials.
 - `app/not-found.tsx` has a comment explaining it avoids `requireUser()` so a bad
-  URL is not mistaken for an auth problem — but `proxy.ts` redirects unknown paths
-  to `/login` first, so it never renders for signed-out visitors. Harmless; the
-  comment is wrong.
+  URL is not mistaken for an auth problem — but `proxy.ts` redirects unknown
+  paths to `/login` first, so it never renders for signed-out visitors. Harmless;
+  the comment is wrong.
 - Local Node is 20.20.2; `@supabase/supabase-js` warns it wants 22+, and Vercel
-  defaults to 22. Local and production runtimes differ.
-- Deployed at https://lock-in-lake-sigma.vercel.app (root directory `./`, since
-  this repo's root *is* the Next app). Supabase's Site URL and Additional
-  Redirect URLs must list that domain with a `/**` wildcard, or sign-in falls
-  back to Site URL and lands on `/?code=` instead of `/auth/callback`.
+  defaults to 22. See failed attempt #9.
+- Supabase's Site URL and Additional Redirect URLs must list the production
+  domain with a `/**` wildcard, or sign-in lands on `/?code=` instead of
+  `/auth/callback`.
 - Earliest-fit fragments some work — a 90-minute item can become 45+45 across two
   evenings even when a longer contiguous slot exists later. Deliberate (earlier =
   more slack before the deadline). A "prefer contiguous" pass is possible.
@@ -181,12 +245,14 @@ the harness's background mode.
 
 ```bash
 npm install
-npm run dev        # http://localhost:3000
-npm test           # 33 tests, no network or database needed
+npm run dev              # http://localhost:3000
+npm test                 # 57 tests, no network or database needed
 npm run build
+npm run lockin -- help   # the CLI
 ```
 
-`.env.local` needs both `NEXT_PUBLIC_SUPABASE_*` values and, for the capture box,
-`ANTHROPIC_API_KEY`. Without the key the app works normally and only that box is
-disabled, with a setup hint rather than a crash. The key is server-side only —
-verified absent from the client bundle, along with the SDK and the system prompt.
+`.env.local` needs both `NEXT_PUBLIC_SUPABASE_*` values. `ANTHROPIC_API_KEY`
+enables the capture box; `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
+`SUPABASE_SERVICE_ROLE_KEY` together enable calendar sync. Each optional group is
+absent-tolerant: the feature disables itself with a setup hint rather than
+crashing, and no key ever reaches the client bundle.

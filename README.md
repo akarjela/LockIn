@@ -24,6 +24,74 @@ suite run with no network. Drafts are shown for confirmation before anything is
 written, with an `assumed: ...` note wherever a field was inferred rather than
 stated. Without the key the rest of the app is unaffected.
 
+## The `lockin` CLI
+
+```bash
+npm run lockin -- login     # Google sign-in, in a browser, once
+npm run lockin -- plan      # rebuild the week and print it
+npm run lockin -- add "finish the pset" --minutes 180 --due 2026-08-20
+npm run lockin -- capture "3h a week on DP, shaky on it"
+npm run lockin -- sync      # pull Google Calendar, then rebuild
+```
+
+`npm run lockin -- help` lists everything. `npm link` puts a bare `lockin` on
+your `PATH`.
+
+It is a thin shell around the same code the web app runs — `lib/plan/` to
+rebuild, `lib/db/` to store, `lib/schedule/` to decide. That reuse is what the
+engine's purity was for: it takes `now` as a parameter and performs no I/O, so
+it behaves identically in a request handler and in a terminal. **No scheduling
+logic lives in `cli/`**, or the two clients would start disagreeing about what
+your week is.
+
+Two pieces make that work:
+
+- **`lib/supabase/current.ts`.** `lib/db/*` used to build a client from the
+  request's cookies, which do not exist in a terminal. It now asks this module,
+  which returns the cookie client unless a process has declared otherwise. Only a
+  CLI entrypoint ever declares otherwise, and only at startup — the server never
+  does, so there is no per-request state to leak.
+- **`lockin login`** runs the same Google OAuth as the browser, through a
+  loopback redirect: a server on `127.0.0.1:8765` catches the code, PKCE keeps it
+  safe without a client secret, and the session lands in
+  `~/.config/lockin/session.json` at mode 600. Using Google rather than a
+  password means the CLI lands on the *same* Supabase user as the browser — any
+  other route risks a second identity and a silently empty account.
+
+Add `http://127.0.0.1:8765` to Supabase → Authentication → URL Configuration →
+Additional Redirect URLs, or the sign-in comes back to the wrong place.
+
+## Google Calendar
+
+With the three `GOOGLE_*` / `SUPABASE_SERVICE_ROLE_KEY` values set, the panel on
+`/availability` connects a calendar read-only. Its events are cached and
+subtracted from your weekly template before anything is packed, so the planner
+stops scheduling over your meetings.
+
+Connecting is a **separate** step from signing in, on purpose: nobody should
+have to hand over their whole calendar before they have seen what the app does,
+and everything else works without it.
+
+Not everything on a calendar is busy. Ignored, deliberately:
+
+| Ignored | Why |
+| --- | --- |
+| All-day events | A birthday or "Sprint 14" would otherwise erase a whole day. The error is asymmetric — a wrongly-busy day silently deletes free time, while a real all-day commitment is something you would also take out of your template. |
+| Events marked *free* | Google's own word for "does not block". |
+| Invitations you declined | You are not there. |
+| Working-location markers | Metadata, not a commitment. |
+
+Recurring events arrive already expanded into instances (`singleEvents=true`),
+so every exception and cancellation Google knows about is applied before we see
+it. A sync stamps every row it writes and then deletes older rows in the same
+window, which is how an event deleted in Google disappears here.
+
+The Google refresh token is the one credential in this app that is *not*
+reachable by its owner through the browser. `google_credentials` has RLS enabled
+with no policies at all, so only the `service_role` key can read it — because
+that token grants access to a third-party account, and an XSS on this origin
+should not be able to walk off with it.
+
 ## Local setup
 
 ```bash
@@ -43,6 +111,11 @@ Row Level Security permits.
    `https://<your-project-ref>.supabase.co/auth/v1/callback`
 2. **Supabase** → Authentication → Providers → Google: enable it and paste the
    client ID and secret from step 1.
+   For calendar sync, also enable the **Google Calendar API** for that project
+   (APIs & Services → Library) and copy the same client ID and secret into
+   `.env.local` as `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`. While the OAuth
+   consent screen is in *Testing*, add yourself under **Test users** or Google
+   refuses the calendar scope.
 3. **Supabase** → Authentication → URL Configuration:
    - Site URL: your production URL (e.g. `https://lockin.vercel.app`)
    - Additional redirect URLs: `http://localhost:3000/**` for local dev, plus
@@ -54,8 +127,9 @@ Row Level Security permits.
 1. Push this repo to GitHub.
 2. Import it at [vercel.com/new](https://vercel.com/new). Leave the root
    directory as `./` — this repo's root *is* the Next app.
-3. Add both environment variables from `.env.local.example` to the Vercel
-   project (Production, Preview, and Development).
+3. Add the environment variables from `.env.local.example` to the Vercel project
+   (Production, Preview, and Development). The two `NEXT_PUBLIC_SUPABASE_*` ones
+   are required; the rest each enable one optional feature.
 4. Deploy, then add the resulting URL to the Supabase URL configuration above.
 
 ## Auth architecture
@@ -81,6 +155,7 @@ Three pieces, deliberately separated:
 | `npm run lint`  | ESLint                                |
 | `npm test`      | Vitest, once                          |
 | `npm run test:watch` | Vitest in watch mode             |
+| `npm run lockin -- <cmd>` | The CLI (`-- help` for the list) |
 
 ## How scheduling works
 

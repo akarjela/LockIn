@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { currentSupabase } from "@/lib/supabase/current";
 import type { Item, ItemDraft, ItemStatus } from "@/lib/db/types";
 
 /**
@@ -8,7 +8,7 @@ import type { Item, ItemDraft, ItemStatus } from "@/lib/db/types";
  * unification — the planner no longer has to fetch two shapes and reconcile them.
  */
 export async function listOpenItems(userId: string): Promise<Item[]> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { data, error } = await supabase
     .from("items")
@@ -26,7 +26,7 @@ export async function listItems(
   userId: string,
   statuses: ItemStatus[] = ["todo", "doing", "done", "archived"],
 ): Promise<Item[]> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { data, error } = await supabase
     .from("items")
@@ -44,7 +44,7 @@ export async function createItem(
   userId: string,
   draft: ItemDraft,
 ): Promise<Item> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   // Exactly one workload field, or the database rejects the row. Defaulting here
   // rather than letting the constraint fire keeps the failure legible: an item
@@ -74,7 +74,7 @@ export async function updateItem(
   id: string,
   patch: Partial<ItemDraft & Pick<Item, "status" | "spent_minutes">>,
 ): Promise<Item> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   // `completed_at` is derived, never caller-supplied: a check constraint requires
   // it to agree with `status`, so it is set in the one place status changes.
@@ -100,7 +100,7 @@ export async function updateItem(
 }
 
 export async function deleteItem(userId: string, id: string): Promise<void> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { error } = await supabase
     .from("items")

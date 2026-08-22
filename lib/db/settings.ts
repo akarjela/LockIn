@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { currentSupabase } from "@/lib/supabase/current";
 import type { UserSettings } from "@/lib/db/types";
 
 /** Applied when a user has no settings row yet. Mirrors the SQL defaults. */
@@ -16,7 +16,7 @@ const DEFAULTS = {
  * tables — a user can exist in `auth.users` before this schema is deployed.
  */
 export async function getSettings(userId: string): Promise<UserSettings> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { data, error } = await supabase
     .from("user_settings")
@@ -43,7 +43,7 @@ export async function updateSettings(
   userId: string,
   patch: Partial<Omit<UserSettings, "user_id" | "created_at" | "updated_at">>,
 ): Promise<UserSettings> {
-  const supabase = await createClient();
+  const supabase = await currentSupabase();
 
   const { data, error } = await supabase
     .from("user_settings")

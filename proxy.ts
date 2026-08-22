@@ -54,6 +54,14 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
+  // Route handlers answer callers that have no browser to redirect — a cron job,
+  // the CLI — so bouncing them to /login would hand back a login page with a 200
+  // instead of an error they can read. They authenticate themselves with
+  // `getUser()` and return their own 401.
+  if (!user && pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  }
+
   if (!user && !isPublic(pathname)) {
     const loginUrl = new URL("/login", request.url);
     // Remember where they were headed so callback can return them there.

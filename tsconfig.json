@@ -10,6 +10,9 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
+    // The CLI is ESM (.mts) and imports its own modules by full path, which is
+    // what Node requires at runtime. Harmless with "noEmit": nothing is rewritten.
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
