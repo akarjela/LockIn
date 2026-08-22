@@ -18,6 +18,7 @@ import {
 
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from "@/lib/env";
 import { setSupabaseFactory } from "@/lib/supabase/current";
+import { NO_REALTIME } from "@/lib/supabase/no-realtime";
 
 /**
  * Signing the CLI in, and keeping it signed in.
@@ -104,26 +105,6 @@ const fileStorage: SupportedStorage = {
 let client: SupabaseClient | null = null;
 
 /**
- * A WebSocket that refuses to be one.
- *
- * `createClient` builds a Realtime client eagerly, and Realtime resolves a
- * WebSocket implementation while doing so — throwing outright when it cannot
- * find one. Node 20 has no global `WebSocket` (Node 22 does), so every CLI
- * command would die at startup over a socket it never opens.
- *
- * Supplying `transport` short-circuits that lookup. This is not a shim: adding
- * `ws` as a dependency to satisfy a connection that is never made would be worse.
- * Anything that genuinely tried to use Realtime here should fail loudly.
- *
- * Safe to delete once this project is on Node 22.
- */
-class NoRealtimeTransport {
-  constructor() {
-    throw new Error("The LockIN CLI does not use Supabase Realtime.");
-  }
-}
-
-/**
  * The CLI's Supabase client.
  *
  * `autoRefreshToken` is off deliberately: it schedules a timer that would keep a
@@ -140,11 +121,7 @@ export function cliClient(): SupabaseClient {
         detectSessionInUrl: false,
         storage: fileStorage,
       },
-      // See NoRealtimeTransport: cast because the option is typed for a real
-      // WebSocket constructor, and this deliberately is not one.
-      realtime: {
-        transport: NoRealtimeTransport as unknown as typeof WebSocket,
-      },
+      realtime: NO_REALTIME,
     });
 
     // Every `lib/db/*` query now resolves to this client rather than to the

@@ -2,6 +2,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
 import { SUPABASE_URL } from "@/lib/env";
 import { googleConfig } from "@/lib/google/env";
+import { NO_REALTIME } from "@/lib/supabase/no-realtime";
 
 /**
  * Service-role Supabase client. **Bypasses Row Level Security entirely.**
@@ -28,5 +29,8 @@ export function createAdminClient() {
 
   return createSupabaseClient(SUPABASE_URL, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    // Required outside Next.js: `lockin sync` reaches this from a bare Node
+    // process, where Realtime's eager WebSocket lookup throws on Node 20.
+    realtime: NO_REALTIME,
   });
 }
